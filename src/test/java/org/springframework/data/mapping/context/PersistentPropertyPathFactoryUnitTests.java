@@ -32,6 +32,7 @@ import org.springframework.data.mapping.context.PersistentPropertyPathFactory.Ty
 import org.springframework.data.mapping.model.BasicPersistentEntity;
 import org.springframework.data.util.TypeInformation;
 import org.springframework.test.util.ReflectionTestUtils;
+import org.springframework.util.ConcurrentLruCache;
 import org.springframework.util.StringUtils;
 
 /**
@@ -95,8 +96,41 @@ class PersistentPropertyPathFactoryUnitTests {
 		assertThatExceptionOfType(InvalidPersistentPropertyPath.class)//
 				.isThrownBy(() -> factory.from(PersonSample.class, "persons.firstname"));
 
-		Map<TypeAndPath, ?> propertyPaths = (Map<TypeAndPath, ?>) ReflectionTestUtils.getField(factory, "propertyPaths");
-		assertThat(propertyPaths).containsKey(TypeAndPath.of(TypeInformation.of(PersonSample.class), "persons.firstname"));
+		ConcurrentLruCache<TypeAndPath, ?> propertyPaths = (ConcurrentLruCache<TypeAndPath, ?>) ReflectionTestUtils.getField(factory, "propertyPaths");
+		assertThat(propertyPaths.contains(TypeAndPath.of(TypeInformation.of(PersonSample.class), "persons.firstname"))).isTrue();
+	}
+
+	@Test // CVE-2026-41695
+	void boundsCacheForUniqueInvalidPropertyPaths() {
+
+		for (int i = 0; i < 2048; i++) {
+
+			String path = "persons.unknown" + i;
+
+			assertThatExceptionOfType(InvalidPersistentPropertyPath.class)//
+					.isThrownBy(() -> factory.from(PersonSample.class, path));
+		}
+
+		ConcurrentLruCache<TypeAndPath, ?> propertyPaths = (ConcurrentLruCache<TypeAndPath, ?>) ReflectionTestUtils.getField(factory, "propertyPaths");
+		assertThat(propertyPaths.size()).isLessThanOrEqualTo(propertyPaths.capacity());
+		assertThat(propertyPaths.contains(TypeAndPath.of(TypeInformation.of(PersonSample.class), "persons.unknown0"))).isFalse();
+		assertThat(propertyPaths.contains(TypeAndPath.of(TypeInformation.of(PersonSample.class), "persons.unknown2047"))).isTrue();
+	}
+
+	@Test // CVE-2026-41695
+	void boundsCacheForUniqueResolvablePropertyPathsOnRecursiveTypes() {
+
+		for (int i = 0; i < 2048; i++) {
+
+			int depth = i % 16;
+			String path = "inner.cyclic.".repeat(depth) + "inner" + " ".repeat(i / 16);
+
+			assertThat(factory.from(Sample.class, path).getLength()).isEqualTo(2 * depth + 1);
+		}
+
+		ConcurrentLruCache<TypeAndPath, ?> propertyPaths = (ConcurrentLruCache<TypeAndPath, ?>) ReflectionTestUtils.getField(factory, "propertyPaths");
+		assertThat(propertyPaths.size()).isLessThanOrEqualTo(propertyPaths.capacity());
+		assertThat(factory.from(Sample.class, "inner.cyclic.inner")).isSameAs(factory.from(Sample.class, "inner.cyclic.inner"));
 	}
 
 	@Test // DATACMNS-1275
